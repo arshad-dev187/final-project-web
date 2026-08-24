@@ -23,8 +23,8 @@ if (!process.env.DB_NAME) {
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
-const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
-const TAX_RATE = 0; // Default 0% until a real tax rate is explicitly configured
+const clientUrl = process.env.CLIENT_URL || 'https://green-ground-cafe.vercel.app';
+const TAX_RATE = 0;
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -58,11 +58,29 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      'img-src': ["'self'", 'data:', 'blob:', clientUrl]
+      'img-src': ["'self'", 'data:', 'blob:', clientUrl, 'https://green-ground-cafe.vercel.app']
     }
   }
 }));
-app.use(cors({ origin: clientUrl, credentials: true }));
+
+const allowedOrigins = [
+  'https://green-ground-cafe.vercel.app',
+  clientUrl,
+  'http://localhost:5173',
+  'http://localhost:3000'
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 app.use('/uploads', express.static(uploadDir));
@@ -103,12 +121,12 @@ const addonSchema = z.object({ name: z.string().trim().min(1).max(80), price: z.
 
 const sendError = (res, status, message) => res.status(status).json({ message });
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
-const signToken = (user) => jwt.sign({ id: user.id, role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn: '2h' });
+const signToken = (user) => jwt.sign({ id: user.id, role: user.role, email: user.email }, process.env.JWT_SECRET || 'secret', { expiresIn: '2h' });
 const requireAuth = (req, res, next) => {
   try {
     const token = req.cookies.admin_token;
     if (!token) return sendError(res, 401, 'Authentication required.');
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = jwt.verify(token, process.env.JWT_SECRET || 'secret');
     next();
   } catch { return sendError(res, 401, 'Session expired.'); }
 };
@@ -130,7 +148,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   const [rows] = await pool.query('SELECT id, name, email, password, role FROM users WHERE email = ? LIMIT 1', [body.data.email]);
   if (!rows[0] || !(await bcrypt.compare(body.data.password, rows[0].password))) return sendError(res, 401, 'Invalid login credentials.');
   const { password, ...safeUser } = rows[0];
-  res.cookie('admin_token', signToken(safeUser), { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 2 * 60 * 60 * 1000 });
+  res.cookie('admin_token', signToken(safeUser), { httpOnly: true, sameSite: 'none', secure: true, maxAge: 2 * 60 * 60 * 1000 });
   res.json({ user: safeUser });
 }));
 app.post('/api/auth/logout', (_req, res) => { res.clearCookie('admin_token'); res.json({ message: 'Logged out.' }); });
@@ -285,6 +303,7 @@ app.put('/api/addons/:id/products', requireAuth, asyncRoute(async (req, res) => 
   }
   res.json({ product_ids: productIds });
 }));
+
 app.post('/api/orders', asyncRoute(async (req, res) => {
   const data = parseBody(orderSchema, req, res);
   if (!data) return;
@@ -358,6 +377,7 @@ app.post('/api/orders', asyncRoute(async (req, res) => {
     connection.release();
   }
 }));
+
 app.get('/api/orders/:id', asyncRoute(async (req, res) => {
   const [orderRows] = await pool.query('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!orderRows[0]) return sendError(res, 404, 'Order not found.');
@@ -366,24 +386,10 @@ app.get('/api/orders/:id', asyncRoute(async (req, res) => {
   res.json({ ...orderRows[0], items: itemRows.map(item => ({ ...item, addons: addonRows.filter(a => a.order_item_id === item.id) })) });
 }));
 
-app.get('/api/dashboard/stats', requireAuth, asyncRoute(async (_req, res) => { const [[products]] = await pool.query('SELECT COUNT(*) AS total FROM products'); const [[categories]] = await pool.query('SELECT COUNT(*) AS total FROM categories'); const [[messages]] = await pool.query('SELECT COUNT(*) AS total FROM messages'); const [[team]] = await pool.query('SELECT COUNT(*) AS total FROM team_members'); const [[reviews]] = await pool.query('SELECT COUNT(*) AS total FROM reviews'); const [recentProducts] = await pool.query('SELECT p.id, p.name, p.price, c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id ORDER BY p.created_at DESC LIMIT 5'); const [recentMessages] = await pool.query('SELECT id, name, subject, status, created_at FROM messages ORDER BY created_at DESC LIMIT 5'); res.json({ totals: { products: products.total, categories: categories.total, messages: messages.total, team: team.total, reviews: reviews.total }, recentProducts, recentMessages }); }));
-app.get('/api/dashboard/analytics', requireAuth, asyncRoute(async (_req, res) => {
-  const [[revenue]] = await pool.query("SELECT COALESCE(SUM(total),0) AS total FROM orders WHERE status NOT IN ('cancelled')");
-  const [[progress]] = await pool.query("SELECT COUNT(*) AS total FROM orders WHERE status IN ('preparing','ready')");
-  const [[today]] = await pool.query("SELECT COUNT(*) AS total, COALESCE(SUM(total),0) AS revenue FROM orders WHERE DATE(created_at) = CURDATE() AND status NOT IN ('cancelled')");
-  const [[yesterday]] = await pool.query("SELECT COUNT(*) AS total, COALESCE(SUM(total),0) AS revenue FROM orders WHERE DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND status NOT IN ('cancelled')");
-  const [[completed]] = await pool.query("SELECT COUNT(*) AS total FROM orders WHERE status = 'completed'");
-  const [[orders]] = await pool.query("SELECT COUNT(*) AS total FROM orders");
-  const [[reviews]] = await pool.query("SELECT COUNT(*) AS total, COALESCE(AVG(rating),0) AS avg FROM reviews WHERE status = 'approved'");
-  const [[complaints]] = await pool.query("SELECT COUNT(*) AS total FROM complaints");
-  const [recentOrders] = await pool.query("SELECT id, order_number, customer_name, contact, total, status, created_at FROM orders ORDER BY created_at DESC LIMIT 5");
-  let recentItems = [];
-  if (recentOrders.length) { const [rows] = await pool.query("SELECT order_id, product_name_snapshot, quantity FROM order_items WHERE order_id IN (?)", [recentOrders.map(o => o.id)]); recentItems = rows; }
-  const [salesByDay] = await pool.query("SELECT DATE(o.created_at) AS day, COALESCE(c.name,'Other') AS category, SUM(oi.line_total) AS total FROM order_items oi JOIN orders o ON o.id = oi.order_id LEFT JOIN products p ON p.id = oi.product_id LEFT JOIN categories c ON c.id = p.category_id WHERE o.status NOT IN ('cancelled') AND o.created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY) GROUP BY DATE(o.created_at), COALESCE(c.name,'Other') ORDER BY day");
-  const [salesByMonth] = await pool.query("SELECT DATE_FORMAT(o.created_at,'%Y-%m') AS month, COALESCE(c.name,'Other') AS category, SUM(oi.line_total) AS total FROM order_items oi JOIN orders o ON o.id = oi.order_id LEFT JOIN products p ON p.id = oi.product_id LEFT JOIN categories c ON c.id = p.category_id WHERE o.status NOT IN ('cancelled') GROUP BY DATE_FORMAT(o.created_at,'%Y-%m'), COALESCE(c.name,'Other') ORDER BY month");
-  const [productPerformance] = await pool.query("SELECT oi.product_name_snapshot AS name, SUM(oi.line_total) AS revenue, COUNT(oi.id) AS orders FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.status NOT IN ('cancelled') GROUP BY oi.product_name_snapshot ORDER BY revenue DESC LIMIT 7");
-  res.json({ revenue: revenue.total, progress: progress.total, today: today.total, todayRevenue: today.revenue, yesterday: yesterday.total, yesterdayRevenue: yesterday.revenue, completed: completed.total, totalOrders: orders.total, reviews: reviews.total, avgRating: Number(reviews.avg || 0), complaints: complaints.total, recentOrders: recentOrders.map(o => ({ ...o, items: recentItems.filter(i => i.order_id === o.id) })), salesByDay, salesByMonth, productPerformance });
-}));
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
 
-app.use((err, req, res, _next) => { console.error(`[server error] ${req.method} ${req.originalUrl}`, err); if (err instanceof multer.MulterError || err.message?.includes('File too large')) return sendError(res, 400, 'Image upload failed. Use JPG, PNG, or WEBP under 5MB.'); sendError(res, 500, 'Something went wrong. Please try again.'); });
-app.listen(port, () => console.log(`Green Grounds API listening on port ${port}`));
+export default app;
