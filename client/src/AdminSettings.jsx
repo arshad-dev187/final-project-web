@@ -1,0 +1,3 @@
+export default function AdminSettings() {
+  return <main className="admin-main"><div className="admin-top"><div><span className="eyebrow">Workspace</span><h1>Settings</h1></div></div><div className="admin-panel settings-panel"><h2>Cafe details</h2><p>These public details are currently managed through the project environment and database configuration.</p><label>Cafe name<input value="Green Grounds Cafe" readOnly /></label><label>Location<input value="Main RCD Road, Winder, Balochistan" readOnly /></label><label>Opening hours<input value="Every day, 8:00 AM - 11:00 PM" readOnly /></label></div></main>;
+}

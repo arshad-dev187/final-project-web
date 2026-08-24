@@ -1,0 +1,20 @@
+﻿es] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [form, setForm] = useState(() => requestedTab === 'team' ? blankTeam : requestedTab === 'gallery' ? blankGallery : requestedTab === 'reviews' ? blankReview : blankProduct);
+  const [editing, setEditing] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const reviewEndpoint = tab === 'reviews' ? 'reviews/admin' : tab === 'products' ? 'team' : tab;
+      const [productRows, categoryRows, otherRows] = await Promise.all([
+        api('/products'), api('/categories'), api(`/${reviewEndpoint}`)
+      ]);
+      setProducts(productRows);
+      setCategories(categoryRows);
+ 
