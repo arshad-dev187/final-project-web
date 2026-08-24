@@ -18,7 +18,7 @@
     "helmet": "latest",
     "jsonwebtoken": "latest",
     "multer": "latest",
-    "mysql2": "latest",
+    "mysql2": "^3.24.2",
     "zod": "latest"
   }
 }
