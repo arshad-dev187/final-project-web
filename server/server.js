@@ -389,10 +389,8 @@ app.get('/api/orders/:id', asyncRoute(async (req, res) => {
   res.json({ ...orderRows[0], items: itemRows.map(item => ({ ...item, addons: addonRows.filter(a => a.order_item_id === item.id) })) });
 }));
 
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-  });
-}
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on port ${port}`);
+});
 
 export default app;
