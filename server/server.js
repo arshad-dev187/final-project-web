@@ -36,7 +36,10 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'green_grounds_cafe',
   waitForConnections: true,
   connectionLimit: 10,
-  decimalNumbers: true
+  decimalNumbers: true,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 await pool.query(`
