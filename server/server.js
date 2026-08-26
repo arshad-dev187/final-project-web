@@ -2856,7 +2856,221 @@ app.get(
     });
   })
 );
+/*
+|--------------------------------------------------------------------------
+| Dashboard
+|--------------------------------------------------------------------------
+*/
 
+app.get(
+  '/api/dashboard/stats',
+  requireAuth,
+  asyncRoute(async (_req, res) => {
+    const [
+      [productCount],
+      [categoryCount],
+      [messageCount],
+      [teamCount],
+      [reviewCount],
+      [recentProducts],
+      [recentMessages]
+    ] = await Promise.all([
+      pool.query('SELECT COUNT(*) AS total FROM products'),
+      pool.query('SELECT COUNT(*) AS total FROM categories'),
+      pool.query('SELECT COUNT(*) AS total FROM messages'),
+      pool.query('SELECT COUNT(*) AS total FROM team_members'),
+      pool.query('SELECT COUNT(*) AS total FROM reviews'),
+
+      pool.query(`
+        SELECT
+          p.id,
+          p.name,
+          p.price,
+          c.name AS category_name
+        FROM products p
+        LEFT JOIN categories c
+          ON c.id = p.category_id
+        ORDER BY p.created_at DESC
+        LIMIT 5
+      `),
+
+      pool.query(`
+        SELECT
+          id,
+          name,
+          subject,
+          status,
+          created_at
+        FROM messages
+        ORDER BY created_at DESC
+        LIMIT 5
+      `)
+    ]);
+
+    res.json({
+      totals: {
+        products: Number(productCount[0]?.total || 0),
+        categories: Number(categoryCount[0]?.total || 0),
+        messages: Number(messageCount[0]?.total || 0),
+        team: Number(teamCount[0]?.total || 0),
+        reviews: Number(reviewCount[0]?.total || 0)
+      },
+      recentProducts,
+      recentMessages
+    });
+  })
+);
+
+app.get(
+  '/api/dashboard/analytics',
+  requireAuth,
+  asyncRoute(async (_req, res) => {
+    const [[orderStats]] = await pool.query(`
+      SELECT
+        COUNT(*) AS totalOrders,
+        COALESCE(SUM(total), 0) AS revenue,
+        COALESCE(SUM(
+          CASE
+            WHEN DATE(created_at) = CURDATE()
+            THEN total
+            ELSE 0
+          END
+        ), 0) AS todayRevenue,
+        COALESCE(SUM(
+          CASE
+            WHEN DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+            THEN total
+            ELSE 0
+          END
+        ), 0) AS yesterdayRevenue,
+        COALESCE(SUM(
+          CASE
+            WHEN DATE(created_at) = CURDATE()
+            THEN 1
+            ELSE 0
+          END
+        ), 0) AS today,
+        COALESCE(SUM(
+          CASE
+            WHEN DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+            THEN 1
+            ELSE 0
+          END
+        ), 0) AS yesterday,
+        COALESCE(SUM(
+          CASE
+            WHEN status IN ('pending', 'confirmed', 'preparing', 'ready')
+            THEN 1
+            ELSE 0
+          END
+        ), 0) AS progress,
+        COALESCE(SUM(
+          CASE
+            WHEN status = 'completed'
+            THEN 1
+            ELSE 0
+          END
+        ), 0) AS completed
+      FROM orders
+    `);
+
+    const [recentOrders] = await pool.query(`
+      SELECT
+        o.id,
+        o.order_number,
+        o.customer_name,
+        o.contact,
+        o.total,
+        o.status,
+        o.created_at
+      FROM orders o
+      ORDER BY o.created_at DESC
+      LIMIT 10
+    `);
+
+ const [orderItems] = await pool.query(`
+  SELECT
+    oi.order_id,
+    oi.product_name_snapshot,
+    oi.quantity
+  FROM order_items oi
+  INNER JOIN (
+    SELECT id
+    FROM orders
+    ORDER BY created_at DESC
+    LIMIT 10
+  ) recent_orders
+    ON recent_orders.id = oi.order_id
+`);
+
+    const ordersWithItems = recentOrders.map((order) => ({
+      ...order,
+      items: orderItems.filter(
+        (item) => Number(item.order_id) === Number(order.id)
+      )
+    }));
+
+    const [productPerformance] = await pool.query(`
+      SELECT
+        oi.product_name_snapshot AS name,
+        SUM(oi.quantity) AS quantity,
+        COALESCE(SUM(oi.line_total), 0) AS revenue
+      FROM order_items oi
+      GROUP BY oi.product_name_snapshot
+      ORDER BY quantity DESC
+      LIMIT 6
+    `);
+
+    const [salesByDay] = await pool.query(`
+      SELECT
+        DATE(created_at) AS label,
+        COALESCE(SUM(total), 0) AS sales
+      FROM orders
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY DATE(created_at)
+    `);
+
+    const [salesByMonth] = await pool.query(`
+      SELECT
+        DATE_FORMAT(created_at, '%Y-%m') AS label,
+        COALESCE(SUM(total), 0) AS sales
+      FROM orders
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 11 MONTH)
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+      ORDER BY label
+    `);
+
+    const [[ratingStats]] = await pool.query(`
+      SELECT
+        COALESCE(AVG(rating), 0) AS avgRating
+      FROM reviews
+      WHERE status = 'approved'
+    `);
+
+    res.json({
+      revenue: Number(orderStats.revenue || 0),
+      todayRevenue: Number(orderStats.todayRevenue || 0),
+      yesterdayRevenue: Number(orderStats.yesterdayRevenue || 0),
+
+      totalOrders: Number(orderStats.totalOrders || 0),
+      today: Number(orderStats.today || 0),
+      yesterday: Number(orderStats.yesterday || 0),
+
+      progress: Number(orderStats.progress || 0),
+      completed: Number(orderStats.completed || 0),
+
+      avgRating: Number(ratingStats.avgRating || 0),
+
+      recentOrders: ordersWithItems,
+
+      productPerformance,
+
+      salesByDay,
+      salesByMonth
+    });
+  })
+);
 /*
 |--------------------------------------------------------------------------
 | Global error handler
