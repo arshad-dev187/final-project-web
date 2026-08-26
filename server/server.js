@@ -2181,7 +2181,7 @@ app.get(
          FROM addons a
          LEFT JOIN product_addons pa
            ON pa.addon_id = a.id
-         GROUP BY a.id
+         GROUP BY a.id, a.name, a.price, a.available
          ORDER BY a.name`
       );
 
