@@ -2675,6 +2675,19 @@ app.post(
     try {
       await connection.beginTransaction();
 
+      /*
+       * The order number depends on the AUTO_INCREMENT id, which is only known
+       * after the insert. We insert with a unique per-attempt placeholder and
+       * update it to the final GG-XXXXX number right away. The placeholder must
+       * be unique: order_number has a UNIQUE index, so a shared literal (e.g.
+       * "GG-PENDING") makes concurrent orders collide and deadlock (MySQL
+       * error 1213) because every transaction locks the same key value.
+       */
+      const pendingOrderNumber =
+        `GG-PENDING-${crypto
+          .randomBytes(4)
+          .toString('hex')}`;
+
       const [
         orderResult
       ] =
@@ -2694,7 +2707,7 @@ app.post(
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            'GG-PENDING',
+            pendingOrderNumber,
             data.customer_name,
             data.order_type,
             data.table_number ||
@@ -2820,6 +2833,33 @@ app.post(
       });
     } catch (err) {
       await connection.rollback();
+
+      console.error(
+        '========================================'
+      );
+      console.error(
+        `[Order] Failed to create order for customer "${data.customer_name}".`
+      );
+      console.error(
+        '[Order] Error:',
+        err.code || err.name || 'Unknown error',
+        '-',
+        err.message
+      );
+      console.error(
+        err.sql
+          ? `[Order] SQL: ${err.sql}`
+          : ''
+      );
+      console.error(
+        err.parameters
+          ? `[Order] Parameters: ${JSON.stringify(err.parameters)}`
+          : ''
+      );
+      console.error(
+        '========================================'
+      );
+
       throw err;
     } finally {
       connection.release();
