@@ -2158,11 +2158,35 @@ app.get(
            ON pa.addon_id = a.id
          WHERE pa.product_id = ?
            AND a.available = 1
-         ORDER BY a.name`,
+         ORDER BY a.name, a.id`,
         [req.params.id]
       );
 
-    res.json(rows);
+      /*
+       * A product can end up with the same add-on listed twice when the
+       * `addons` table contains multiple rows that share the same name
+       * (older seed/migration runs inserted duplicates because `addons.name`
+       * was never unique). De-duplicate by add-on id first and then by add-on
+       * name, keeping the earliest (lowest id) row so every add-on appears
+       * exactly once per product while ordering, selection and the underlying
+       * rows / product links are preserved.
+       */
+      const seenIds = new Set();
+      const seenNames = new Set();
+      const uniqueAddons = [];
+
+      for (const addon of rows) {
+        const addonId = Number(addon.id);
+
+        if (seenIds.has(addonId)) continue;
+        if (seenNames.has(addon.name)) continue;
+
+        seenIds.add(addonId);
+        seenNames.add(addon.name);
+        uniqueAddons.push(addon);
+      }
+
+      res.json(uniqueAddons);
   })
 );
 
@@ -2856,6 +2880,176 @@ app.get(
     });
   })
 );
+app.put(
+  '/api/orders/:id/status',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const data = z.object({
+      status: z.enum([
+        'pending',
+        'accepted',
+        'in_progress',
+        'completed',
+        'rejected'
+      ])
+    }).safeParse(req.body);
+
+    if (!data.success) {
+      return sendError(
+        res,
+        400,
+        'Please provide a valid order status.'
+      );
+    }
+
+    const [orderRows] =
+      await pool.query(
+        'SELECT id, status FROM orders WHERE id = ?',
+        [req.params.id]
+      );
+
+    if (!orderRows[0]) {
+      return sendError(
+        res,
+        404,
+        'Order not found.'
+      );
+    }
+
+    const currentStatus =
+      orderRows[0].status;
+
+    const allowedTransitions = {
+      pending: ['accepted', 'rejected'],
+      accepted: ['in_progress', 'rejected'],
+      in_progress: ['completed', 'rejected'],
+      confirmed: ['accepted', 'in_progress', 'completed', 'rejected'],
+      preparing: ['accepted', 'in_progress', 'completed', 'rejected'],
+      ready: ['accepted', 'in_progress', 'completed', 'rejected'],
+      cancelled: ['accepted', 'rejected'],
+      completed: [],
+      rejected: []
+    };
+
+    const allowed =
+      allowedTransitions[currentStatus] || [];
+
+    if (!allowed.includes(data.data.status)) {
+      return sendError(
+        res,
+        400,
+        `An order in "${currentStatus}" status cannot be changed to "${data.data.status}".`
+      );
+    }
+
+    await pool.query(
+      'UPDATE orders SET status = ? WHERE id = ?',
+      [data.data.status, req.params.id]
+    );
+
+    const [updatedRows] =
+      await pool.query(
+        'SELECT * FROM orders WHERE id = ?',
+        [req.params.id]
+      );
+
+    res.json(updatedRows[0]);
+  })
+);
+
+app.get(
+  '/api/orders',
+  requireAuth,
+  asyncRoute(async (_req, res) => {
+    const [orderRows] =
+      await pool.query(
+        'SELECT * FROM orders ORDER BY created_at DESC, id DESC'
+      );
+
+    if (!orderRows.length) {
+      return res.json([]);
+    }
+
+    const orderIds =
+      orderRows.map(
+        (o) => o.id
+      );
+
+    const [itemRows] =
+      await pool.query(
+        'SELECT * FROM order_items WHERE order_id IN (?) ORDER BY id',
+        [orderIds]
+      );
+
+    const [addonRows] =
+      await pool.query(
+        `SELECT
+          oia.*
+         FROM order_item_addons oia
+         JOIN order_items oi
+           ON oi.id = oia.order_item_id
+         WHERE oi.order_id IN (?)
+         ORDER BY oia.id`,
+        [orderIds]
+      );
+
+    const itemsByOrder =
+      new Map();
+
+    itemRows.forEach(
+      (item) => {
+        if (!itemsByOrder.has(item.order_id)) {
+          itemsByOrder.set(
+            item.order_id,
+            []
+          );
+        }
+
+        itemsByOrder
+          .get(item.order_id)
+          .push({
+            ...item,
+            addons: []
+          });
+      }
+    );
+
+    addonRows.forEach(
+      (addon) => {
+        const item =
+          itemRows.find(
+            (i) =>
+              i.id === addon.order_item_id
+          );
+
+        if (!item) return;
+
+        const target =
+          itemsByOrder
+            .get(item.order_id)
+            ?.find(
+              (x) =>
+                x.id === item.id
+            );
+
+        if (target) {
+          target.addons.push(addon);
+        }
+      }
+    );
+
+    res.json(
+      orderRows.map(
+        (order) => ({
+          ...order,
+          items:
+            itemsByOrder.get(order.id) || []
+        })
+      )
+    );
+  })
+);
+
 /*
 |--------------------------------------------------------------------------
 | Dashboard
@@ -2924,7 +3118,11 @@ app.get(
 app.get(
   '/api/dashboard/analytics',
   requireAuth,
-  asyncRoute(async (_req, res) => {
+  asyncRoute(async (req, res) => {
+    const range = ['day', 'month', 'year', 'all', 'custom'].includes(req.query.range)
+      ? req.query.range
+      : 'day';
+
     const [[orderStats]] = await pool.query(`
       SELECT
         COUNT(*) AS totalOrders,
@@ -3013,33 +3211,94 @@ app.get(
     const [productPerformance] = await pool.query(`
       SELECT
         oi.product_name_snapshot AS name,
-        SUM(oi.quantity) AS quantity,
+        SUM(oi.quantity) AS orders,
         COALESCE(SUM(oi.line_total), 0) AS revenue
       FROM order_items oi
       GROUP BY oi.product_name_snapshot
-      ORDER BY quantity DESC
+      ORDER BY orders DESC
       LIMIT 6
     `);
 
-    const [salesByDay] = await pool.query(`
-      SELECT
-        DATE(created_at) AS label,
-        COALESCE(SUM(total), 0) AS sales
-      FROM orders
-      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-      GROUP BY DATE(created_at)
-      ORDER BY DATE(created_at)
-    `);
+    let salesSql;
+    let salesParams = [];
 
-    const [salesByMonth] = await pool.query(`
-      SELECT
-        DATE_FORMAT(created_at, '%Y-%m') AS label,
-        COALESCE(SUM(total), 0) AS sales
-      FROM orders
-      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 11 MONTH)
-      GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-      ORDER BY label
-    `);
+    if (range === 'month') {
+      salesSql = `
+        SELECT
+          DATE_FORMAT(created_at, '%Y-%m') AS label,
+          COALESCE(SUM(total), 0) AS sales
+        FROM orders
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 11 MONTH)
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY label
+      `;
+    } else if (range === 'year') {
+      salesSql = `
+        SELECT
+          YEAR(created_at) AS label,
+          COALESCE(SUM(total), 0) AS sales
+        FROM orders
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 4 YEAR)
+        GROUP BY YEAR(created_at)
+        ORDER BY label
+      `;
+    } else if (range === 'all') {
+      salesSql = `
+        SELECT
+          DATE_FORMAT(created_at, '%Y-%m') AS label,
+          COALESCE(SUM(total), 0) AS sales
+        FROM orders
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY label
+      `;
+    } else if (range === 'custom') {
+      const start = /^\d{4}-\d{2}-\d{2}$/.test(req.query.start || '')
+        ? req.query.start
+        : '';
+      const end = /^\d{4}-\d{2}-\d{2}$/.test(req.query.end || '')
+        ? req.query.end
+        : '';
+
+      if (start && end) {
+        salesSql = `
+          SELECT
+            DATE_FORMAT(created_at, '%Y-%m-%d') AS label,
+            COALESCE(SUM(total), 0) AS sales
+          FROM orders
+          WHERE created_at >= ?
+            AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+          GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+          ORDER BY DATE_FORMAT(created_at, '%Y-%m-%d')
+        `;
+        salesParams = [start, end];
+      } else {
+        salesSql = `
+          SELECT
+            DATE_FORMAT(created_at, '%Y-%m-%d') AS label,
+            COALESCE(SUM(total), 0) AS sales
+          FROM orders
+          WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+          ORDER BY DATE_FORMAT(created_at, '%Y-%m-%d')
+        `;
+      }
+    } else {
+      salesSql = `
+        SELECT
+          DATE_FORMAT(created_at, '%Y-%m-%d') AS label,
+          COALESCE(SUM(total), 0) AS sales
+        FROM orders
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+        ORDER BY DATE_FORMAT(created_at, '%Y-%m-%d')
+      `;
+    }
+
+    const [salesRows] = await pool.query(salesSql, salesParams);
+    const sales = salesRows.map((row) => ({
+      label: String(row.label),
+      total: Number(row.sales || 0)
+    }));
 
     const [[ratingStats]] = await pool.query(`
       SELECT
@@ -3066,8 +3325,7 @@ app.get(
 
       productPerformance,
 
-      salesByDay,
-      salesByMonth
+      sales
     });
   })
 );

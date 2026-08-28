@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS orders (
   tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
   tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
   total DECIMAL(10,2) NOT NULL,
-  status ENUM('pending','confirmed','preparing','ready','completed','cancelled') NOT NULL DEFAULT 'pending',
+  status ENUM('pending','accepted','in_progress','completed','rejected','confirmed','preparing','ready','cancelled') NOT NULL DEFAULT 'pending',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_orders_status (status),

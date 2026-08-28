@@ -29,6 +29,7 @@ export default function AdminLayout() {
       <nav aria-label="Admin navigation">
         <NavLink className={() => location.pathname === '/admin/dashboard' && !location.search ? 'active' : ''} to="/admin/dashboard">Dashboard</NavLink>
         <NavLink className={() => location.pathname === '/admin/manage' && location.search === '?tab=products' ? 'active' : ''} to="/admin/manage?tab=products">Products</NavLink>
+        <NavLink className={() => location.pathname === '/admin/dashboard' && location.search === '?tab=orders' ? 'active' : ''} to="/admin/dashboard?tab=orders">Orders</NavLink>
         <NavLink className={() => location.pathname === '/admin/dashboard' && location.search === '?tab=categories' ? 'active' : ''} to="/admin/dashboard?tab=categories">Categories</NavLink>
         <NavLink className={() => location.pathname === '/admin/manage' && location.search === '?tab=gallery' ? 'active' : ''} to="/admin/manage?tab=gallery">Gallery</NavLink>
         <NavLink className={() => location.pathname === '/admin/manage' && location.search === '?tab=reviews' ? 'active' : ''} to="/admin/manage?tab=reviews">Reviews</NavLink>
