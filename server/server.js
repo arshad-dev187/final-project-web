@@ -2997,6 +2997,82 @@ app.put(
   })
 );
 
+app.delete(
+  '/api/orders/:id',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const [orderRows] =
+      await pool.query(
+        'SELECT id, order_number, status FROM orders WHERE id = ?',
+        [req.params.id]
+      );
+
+    if (!orderRows[0]) {
+      return sendError(
+        res,
+        404,
+        'Order not found.'
+      );
+    }
+
+    if (
+      orderRows[0].status !==
+      'completed'
+    ) {
+      return sendError(
+        res,
+        403,
+        'Only completed orders can be deleted.'
+      );
+    }
+
+    const connection =
+      await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      /*
+       * Delete child records explicitly before the order itself so the
+       * deletion is safe even without relying on ON DELETE CASCADE:
+       * 1. order_item_addons rows belonging to this order's items
+       * 2. order_items rows belonging to this order
+       * 3. the order row
+       */
+      await connection.query(
+        `DELETE FROM order_item_addons
+         WHERE order_item_id IN (
+           SELECT id
+           FROM order_items
+           WHERE order_id = ?
+         )`,
+        [req.params.id]
+      );
+
+      await connection.query(
+        'DELETE FROM order_items WHERE order_id = ?',
+        [req.params.id]
+      );
+
+      await connection.query(
+        'DELETE FROM orders WHERE id = ?',
+        [req.params.id]
+      );
+
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
+    res.json({
+      message: 'Order deleted successfully.'
+    });
+  })
+);
+
 app.get(
   '/api/orders',
   requireAuth,
